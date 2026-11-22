@@ -32,6 +32,11 @@ the **blueprint** that one fresh engineer will implement from scratch. It is not
 7. **Judge disagreements**: how each was resolved.
 8. **Open questions for the human**: decisions that are the owner's to make, each with
    your recommendation.
+8b. **Requirements surfaced**: needs the tournament revealed that the spec does not
+   cover. Examples: a probe that every design struggled with, a judge's "this will be
+   needed", a difftest disagreement the spec leaves unspecified. Give each one: the
+   requirement | the evidence (citation) | suggested KEEP-later / DEFER / DROP. Do **not**
+   design them into this blueprint. The final build implements the frozen spec only.
 9. **Implementation order**: steps with the acceptance tests expected to go green at
    each step.
 

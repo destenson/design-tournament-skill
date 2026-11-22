@@ -23,5 +23,6 @@ files are in `{{AUDIT_DIR}}` (`<lens>.md` report plus a `<lens>/` folder with th
 
 # Final message
 Tables: **added** (new behavior IDs → test names → defect), **rejected** (finding →
-reason: duplicate / not a defect / out of scope / flaky), **curated** (existing tests
+reason: duplicate / not a defect / out of scope / flaky → suggested DROP or DEFER;
+DEFER only for real defects or needs that are out of this run's scope), **curated** (existing tests
 changed). Then the new totals of KEEP/CHANGE behaviors and tests.

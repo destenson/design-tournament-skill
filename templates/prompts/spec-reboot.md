@@ -43,6 +43,11 @@ failing test. Do not guess.
   reason, not because of compile errors (if a CHANGE needs an API that does not exist
   yet, put the test behind the smallest stub needed to compile, and say so).
 - Do not commit; the harness commits.
+- Requirements you consider but leave out of SPEC.md (too large, out of scope, or
+  better done later) do **not** go into SPEC.md as plans. List them in your final
+  message so the human can decide KEEP / DEFER / DROP. SPEC.md may list non-goals, but
+  must never say that something is planned for later.
 
-Finish with a summary: the counts of KEEP/CHANGE/DROP, the test counts, and the most
-important defects found.
+Finish with a summary: the counts of KEEP/CHANGE/DROP, the test counts, the most
+important defects found, and a **Requirements left out** table: requirement | why left
+out | suggested KEEP/DEFER/DROP. Include brief items you did not turn into behaviors.

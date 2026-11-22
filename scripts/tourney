@@ -19,11 +19,13 @@ usage() {
   cat <<'EOF'
 usage: tourney <command> <run> [args]
 
-  init <run> [--mode greenfield|reboot]   create .tournament/<run>/ from templates
+  init <run> [--mode M] [--previous F]    create .tournament/<run>/ from templates; F = a previous
+                                          run's record: its DEFER items are carried into the ledger
   spec <run>                              agent drafts SPEC.md + acceptance tests (branch .../spec)
   audit <run> [LENS...]                   auditor agents hunt defects the draft spec missed, in parallel
   fold <run>                              agent folds confirmed audit findings into SPEC.md + frozen tests
-  freeze <run>                            commit spec worktree edits, hash FROZEN_PATHS
+  ledger <run>                            check the requirements ledger (every item KEEP/DEFER/DROP)
+  freeze <run> [--force]                  commit spec worktree edits, hash FROZEN_PATHS (needs a clean ledger)
   diverge <run> [LETTER...] [--force]     one agent per stance, in parallel
   measure <run> [TARGET...]               build/test/lint/LOC/frozen-check (targets: letters, 'final')
   difftest <run> [TARGET...]              run the shared harness on spec baseline + targets, report disagreements
@@ -31,6 +33,7 @@ usage: tourney <command> <run> [args]
   judge <run>                             blind export + judge agents, in parallel
   synthesize <run>                        judge reports -> synthesis/DESIGN.md
   build <run>                             fresh agent implements DESIGN.md (branch .../final)
+  record <run>                            write the durable tournament record into the final branch
   all <run>                               diverge, measure, probe, judge, synthesize
   status <run>                            progress and spend
   render <run> <template> [file]          print a rendered prompt (for in-session Agent fallback)
@@ -53,6 +56,7 @@ load_run() {
   WORKTREE_ROOT=""
   DIFFTEST_HARNESS=""; DIFFTEST_INSTALL=""; DIFFTEST_CMD=""; DIFFTEST_REFERENCE_ENV=""
   DIFFTEST_REL_TOL="1e-6"; DIFFTEST_ABS_TOL="1e-9"
+  RECORD_PATH="docs/tournaments/{run}.md"
   # shellcheck disable=SC1091
   source "$RD/config.sh"
   WT="${WORKTREE_ROOT:-$(dirname "$REPO")/$(basename "$REPO").tourney/$RUN}"
@@ -116,13 +120,21 @@ render() { py render "$1" > "$2"; }   # template -> file (uses TV_* env)
 # ---------------------------------------------------------------- commands
 cmd_init() {
   local run="${1:-}"; shift || true; [ -n "$run" ] || die "missing <run>"
-  local mode=greenfield
-  while [ $# -gt 0 ]; do case "$1" in --mode) mode=$2; shift 2;; *) die "unknown arg $1";; esac; done
+  local mode=greenfield previous=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --mode) mode=$2; shift 2;; --previous) previous=$2; shift 2;; *) die "unknown arg $1";; esac; done
+  [ -z "$previous" ] || [ -f "$previous" ] || die "--previous: no such file $previous"
   [[ "$mode" =~ ^(greenfield|reboot)$ ]] || die "--mode must be greenfield or reboot"
   RD="$TROOT/$run"; [ -e "$RD" ] && die "$RD already exists"
   mkdir -p "$RD"
   cp -r "$TEMPLATES/prompts" "$TEMPLATES/stances" "$TEMPLATES/judges" "$TEMPLATES/probes" "$TEMPLATES/auditors" "$RD/"
   cp "$TEMPLATES/brief.md" "$RD/brief.md"
+  cp "$TEMPLATES/requirements.md" "$RD/requirements.md"
+  if [ -n "$previous" ]; then
+    cp "$previous" "$RD/previous-record.md"
+    py ledger-carry "$RD/previous-record.md" >> "$RD/requirements.md"
+    log "carried $(py ledger-check "$RD/requirements.md" --count-undecided) deferred item(s) from $previous; decide each one"
+  fi
   py detect-config "$REPO" "$mode" > "$RD/config.sh"
   git -C "$REPO" rev-parse HEAD > "$RD/base_ref"
   local excl; excl="$(git -C "$REPO" rev-parse --git-common-dir)/info/exclude"
@@ -133,8 +145,10 @@ Created $RD
 Next:
   1. edit $RD/config.sh      (commands, SCOPE_PATHS, FROZEN_PATHS, budget)
   2. write $RD/brief.md      (goal, constraints, known defects, non-goals)
+     and $RD/requirements.md (the ledger: KEEP / DEFER / DROP every requirement)
   3. prune/add $RD/stances/*.md and write hidden $RD/probes/*.md
-  4. tourney spec $run -> (optional) tourney audit $run -> tourney fold $run -> review -> tourney freeze $run
+  4. tourney spec $run -> (optional) tourney audit $run -> tourney fold $run -> update the ledger
+     -> review -> tourney freeze $run
   5. (optional) write a differential-test harness; see DIFFTEST_* in config.sh
 EOF
 }
@@ -190,8 +204,14 @@ cmd_fold() {
   echo "Folded. Summary: $RD/audit/FOLD.md. Review SPEC.md, then: tourney freeze $RUN"
 }
 
+cmd_ledger() { load_run "$1"; py ledger-check "$RD/requirements.md"; }
+
 cmd_freeze() {
   load_run "$1"
+  if [ -f "$RD/requirements.md" ] && ! py ledger-check "$RD/requirements.md" >&2; then
+    [ "${2:-}" = --force ] || die "requirements ledger has open items (above); decide them or pass --force"
+    log "freezing despite open ledger items (--force)"
+  fi
   local dir="$WT/spec"; [ -d "$dir" ] || die "no spec worktree; run 'tourney spec $RUN' first"
   if [ -n "$(git -C "$dir" status --porcelain)" ]; then commit_wt "$dir" "tournament spec (human edits)"; fi
   git -C "$dir" rev-parse HEAD > "$RD/state/spec_ref"
@@ -416,12 +436,24 @@ cmd_build() {
   echo "Built $BR/final. Verify: tourney measure $RUN final && tourney probe $RUN final"
 }
 
+# Durable record of the run, committed to the final branch (the run dir is local-only).
+cmd_record() {
+  load_run "$1"
+  local dir="$WT/final"; [ -d "$dir" ] || die "no final worktree; run 'tourney build $RUN' first"
+  local rel="${RECORD_PATH//\{run\}/$RUN}"
+  mkdir -p "$(dirname "$dir/$rel")"
+  py record "$RD" "$RUN" "$(cat "$RD/base_ref")" "$(spec_ref)" "$(git -C "$dir" rev-parse HEAD)" > "$dir/$rel"
+  commit_wt "$dir" "tournament record: $RUN"
+  echo "Wrote $rel on $BR/final. Next tournament: tourney init <next> --previous <path to it>"
+}
+
 cmd_all() {
   local run=$1
   cmd_diverge "$run"; ( cmd_measure "$run" )
   if (load_run "$run" >/dev/null; [ -n "$DIFFTEST_CMD" ]); then ( cmd_difftest "$run" ); fi
   ( cmd_probe "$run" ); ( cmd_judge "$run" ); ( cmd_synthesize "$run" )
-  echo "Stopped before build: review .tournament/$run/synthesis/DESIGN.md"
+  echo "Stopped before build: review .tournament/$run/synthesis/DESIGN.md and its"
+  echo "'Requirements surfaced' section; record each item in requirements.md"
 }
 
 cmd_status() { load_run "$1"; py status "$RD" "$WT"; }
@@ -448,6 +480,7 @@ main() {
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     init) cmd_init "$@";; spec) cmd_spec "$@";; freeze) cmd_freeze "$@";;
+    ledger) cmd_ledger "$@";; record) cmd_record "$@";;
     audit) cmd_audit "$@";; fold) cmd_fold "$@";; difftest) cmd_difftest "$@";;
     diverge) cmd_diverge "$@";; measure) cmd_measure "$@";; probe) cmd_probe "$@";;
     judge) cmd_judge "$@";; synthesize) cmd_synthesize "$@";; build) cmd_build "$@";;

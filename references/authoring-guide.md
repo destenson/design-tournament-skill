@@ -18,6 +18,20 @@ Every agent reads it, so its errors propagate. Write:
   tests for KEEP behaviors run now and tests for CHANGE behaviors fail for the right
   reason.
 
+## Requirements ledger (`requirements.md`)
+One row per requirement: `| ID | Requirement | Source | Decision | Why | Ref |`. Seed
+it from the brief before the spec is drafted. Write requirements as outcomes ("P
+stays PSD on ill-conditioned models"), not designs ("use Joseph form"). For a DEFER
+row, write the tracker issue so someone can act on it without the run directory:
+the requirement, why it was deferred, what the next spec should cover, and a suggested
+hidden probe. Example rows:
+
+| ID | Requirement | Source | Decision | Why | Ref |
+|---|---|---|---|---|---|
+| R1 | No panic on bad input from the public API | brief | KEEP | | B15 |
+| R2 | Time-varying model inputs for the nonlinear filters | user | DEFER | keep this spec small | DES-143 |
+| R3 | Report the exact supplied shape in DimensionMismatch | audit:claims-vs-code | DROP | field values deliberately unspecified | |
+
 ## Stances (`stances/*.md`)
 A stance must change the *architecture*, not the polish. Test: would two agents that
 follow different stances produce different module boundaries or core types? Each file

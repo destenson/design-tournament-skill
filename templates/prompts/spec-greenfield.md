@@ -34,5 +34,10 @@ against what you write. You define *what* is built, never *how*.
 - If the brief is ambiguous, choose the simplest reading and record it under
   "Assumptions" in SPEC.md.
 - Do not commit; the harness commits.
+- Requirements you consider but leave out of SPEC.md (too large, out of scope, or
+  better done later) do **not** go into SPEC.md as plans. List them in your final
+  message so the human can decide KEEP / DEFER / DROP. SPEC.md may list non-goals, but
+  must never say that something is planned for later.
 
-Finish with a short summary: the behavior count, the test count, and assumptions made.
+Finish with a short summary: the behavior count, the test count, assumptions made, and a
+**Requirements left out** table: requirement | why left out | suggested KEEP/DEFER/DROP.

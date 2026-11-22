@@ -5,7 +5,7 @@ description: Run a multi-agent design tournament on a project or module. Auditor
 
 # Design Tournament
 
-Spec → audit → diverge → measure → judge → synthesize → rebuild. The output is a
+Spec → audit → diverge → measure → judge → synthesize → rebuild → record. The output is a
 better *design*, not a merge of code. Merging code from N candidates produces a
 Frankenstein with mismatched abstractions. Instead, ideas are extracted into
 `DESIGN.md` and one fresh agent implements it cleanly.
@@ -24,17 +24,18 @@ difftest harness) lives in the run directory.
 
 | # | Command | Who | Output | Human checkpoint |
 |---|---------|-----|--------|------------------|
-| 0 | `tourney init <run> --mode greenfield\|reboot` | you | `config.sh`, `brief.md`, templates | edit config + brief |
+| 0 | `tourney init <run> --mode greenfield\|reboot [--previous REC]` | you | `config.sh`, `brief.md`, `requirements.md`, templates | edit config, brief, **ledger** |
 | 1 | `tourney spec <run>` | 1 agent | branch `tourney/<run>/spec`: `SPEC.md` + acceptance tests | read the draft |
 | 1a | `tourney audit <run>` | 3 agents ∥ | `audit/<lens>.md` reports + `audit_*` tests | read the reports |
-| 1b | `tourney fold <run>` | 1 agent | confirmed findings folded into the spec | **approve spec** → `tourney freeze <run>` |
+| 1b | `tourney fold <run>` | 1 agent | confirmed findings folded into the spec | **approve spec + ledger** → `tourney freeze <run>` (refuses on open ledger items) |
 | 2 | `tourney diverge <run>` | N agents ∥ | branches `tourney/<run>/A..`, each with `DESIGN_NOTES.md` | — |
 | 3 | `tourney measure <run>` | script | `metrics/summary.md` | glance at it |
 | 3a | `tourney difftest <run>` | script | `difftest/summary.md`: where implementations disagree | read the disagreements |
 | 4 | `tourney probe <run>` | N×P agents ∥ | `probe/summary.md`, diffs, maintainer notes | — |
 | 5 | `tourney judge <run>` | 3 agents ∥, blinded | `reports/judge-*.md` | read the reports |
-| 6 | `tourney synthesize <run>` | 1 agent | `synthesis/DESIGN.md` | **approve design** |
+| 6 | `tourney synthesize <run>` | 1 agent | `synthesis/DESIGN.md` incl. "Requirements surfaced" | **approve design; decide surfaced requirements** |
 | 7 | `tourney build <run>` | 1 agent | branch `tourney/<run>/final` | review; `measure`/`difftest`/`probe` it as `final` |
+| 8 | `tourney record <run>` | script | `docs/tournaments/<run>.md` on the final branch | — |
 
 `tourney all <run>` runs phases 2-6 (including difftest when configured) after the
 spec is frozen, then stops for design review. Audit and difftest are optional but
@@ -69,12 +70,45 @@ use the directory containing this file. Run it from inside the target repo.
    bugs nobody wrote a test for.
 7. **Run the long phases in the background** (`run_in_background: true`). Do not poll.
    Read `logs/` only if something fails.
-8. **After judging**, summarize for the user: the metrics, difftest disagreements,
+8. **Keep the requirements ledger** (`requirements.md`, see below) at every checkpoint.
+9. **After judging**, summarize for the user: the metrics, difftest disagreements,
    probe results, where the judges agreed and disagreed, and the proposed
    `DESIGN.md`. Get approval (or edits) before `build`.
-9. **Verify the final result** with `measure`, `difftest`, and `probe` on `final`, and
+10. **Verify the final result** with `measure`, `difftest`, and `probe` on `final`, and
    compare it against the candidates. If it does not beat the best candidate, say so
    plainly.
+11. **Close the run** with `tourney record <run>`. The run directory is local and is
+   lost with the machine; the record on the final branch is what the next tournament
+   starts from (`init --previous`).
+
+## Requirements ledger: keep, defer, drop
+
+Every requirement that comes up gets exactly one decision in `.tournament/<run>/requirements.md`.
+Requirements come from the brief, the user, the spec agent's "Requirements left out",
+the audit/fold rejections, the judges, the probes, and the synthesis's "Requirements
+surfaced".
+
+- **KEEP**: in this run's SPEC.md. `Ref` = the behavior ID.
+- **DEFER**: deliberately left for a later tournament. `Ref` = an issue in the project's
+  tracker. Use whichever tracker the user works in (Linear, GitHub Issues, Jira, …,
+  through the tools available), and ask which one if it isn't obvious. Creating the
+  issue is outward-facing, so get the user's OK the first time.
+- **DROP**: rejected. `Why` says why.
+- **`?`**: undecided. `tourney freeze` refuses while any remain (`--force` overrides).
+
+The decisions are the **user's**. Propose a decision for each item with a one-line
+reason, then record what they choose. Checkpoints: after writing the brief, after
+spec/fold (before freeze), and after synthesis (before build). `tourney ledger <run>`
+checks the file.
+
+Keep deferrals invisible to candidates. SPEC.md and the brief may list a deferred item
+as a plain non-goal, but never as "planned for later": candidates who know what is
+coming design toward it. That is a different, and unmeasured, tournament.
+
+Deferred items flow forward. `tourney record` copies the ledger into the durable
+record, and `tourney init <next> --previous <record>` carries every DEFER row into the
+new ledger as `?`, so each one must be decided again: KEEP it now, DEFER it again, or
+DROP it.
 
 ## Rules that keep it honest
 
@@ -87,6 +121,8 @@ use the directory containing this file. Run it from inside the target repo.
   mid-tournament, stop, fix it, re-freeze, and re-run `diverge`.
 - **Don't merge candidate code.** The synthesizer writes prose and interfaces. The
   builder may *read* candidates but rewrites everything.
+- **Nothing silently dropped.** A requirement that is not in the spec is in the ledger
+  as DEFER (with a tracker issue) or DROP (with a reason).
 - **Report faithfully.** Failed candidates, tampered tests, difftest disagreements,
   and a final build that loses on the probes all go in your summary.
 - **Pushing.** Tournament branches are local by default. If the user wants them on the
@@ -105,5 +141,5 @@ branch name the script would use, then continue with the script phases as normal
 - `scripts/tourney`: the CLI (all phases).
 - `scripts/lib.py`: templating, metrics/probe/difftest summaries, freeze checks.
 - `templates/`: copied into each run at `init` (prompts, stances, judge lenses,
-  auditor lenses, a probe example, a brief skeleton).
+  auditor lenses, a probe example, a brief skeleton, the requirements ledger).
 - `references/`: rationale and the authoring guide.

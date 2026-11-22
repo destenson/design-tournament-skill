@@ -180,6 +180,9 @@ DIFFTEST_CMD=""            # e.g. cargo test --release --quiet --test zz_difftes
 DIFFTEST_REFERENCE_ENV=""  # e.g. DIFFTEST_REFERENCE=1: also run the harness's own oracle as 'reference'
 DIFFTEST_REL_TOL="1e-6"
 DIFFTEST_ABS_TOL="1e-9"
+
+# Durable record written to the final branch by 'tourney record' ({{run}} = run name)
+RECORD_PATH="docs/tournaments/{{run}}.md"
 """)
 
 
@@ -497,6 +500,106 @@ def cmd_difftest_summary(a):
           "and the original code is one voter). Investigate each disagreement cluster.")
 
 
+# ------------------------------------------------------------------ requirements ledger
+LEDGER_COLS = ["ID", "Requirement", "Source", "Decision", "Why", "Ref"]
+DECISIONS = {"KEEP", "DEFER", "DROP", "?"}
+
+
+def ledger_rows(text: str) -> list[dict]:
+    """Rows of the first markdown table whose header starts with | ID | Requirement |."""
+    rows, in_table = [], False
+    for line in text.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")] if line.strip().startswith("|") else None
+        if cells is None:
+            if in_table:
+                break
+            continue
+        if not in_table:
+            if cells[:2] == ["ID", "Requirement"]:
+                in_table = True
+            continue
+        if all(set(c) <= set("-: ") for c in cells):
+            continue  # separator row
+        cells += [""] * (len(LEDGER_COLS) - len(cells))
+        rows.append(dict(zip(LEDGER_COLS, cells[: len(LEDGER_COLS)])))
+    return rows
+
+
+def _blank(v: str) -> bool:
+    return v.strip() in ("", "-", "–", "—")
+
+
+def cmd_ledger_check(a):
+    rows = ledger_rows(read(a.file))
+    problems = []
+    for r in rows:
+        d = r["Decision"].strip("` ").upper()
+        rid = r["ID"] or "(no id)"
+        if d not in DECISIONS:
+            problems.append(f"{rid}: decision '{r['Decision']}' is not KEEP/DEFER/DROP/?")
+        elif d == "?":
+            problems.append(f"{rid}: undecided: {r['Requirement'][:70]}")
+        elif d == "DEFER" and _blank(r["Ref"]):
+            problems.append(f"{rid}: DEFER without a tracker issue in Ref")
+        elif d == "DROP" and _blank(r["Why"]):
+            problems.append(f"{rid}: DROP without a reason in Why")
+        elif d == "KEEP" and _blank(r["Ref"]):
+            problems.append(f"{rid}: KEEP without the spec behavior ID in Ref")
+    if a.count_undecided:
+        print(sum(1 for r in rows if r["Decision"].strip("` ") == "?"))
+        return
+    counts = {k: sum(1 for r in rows if r["Decision"].strip("` ").upper() == k) for k in ("KEEP", "DEFER", "DROP", "?")}
+    print(f"ledger: {len(rows)} items: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
+    for pr in problems:
+        print(f"  - {pr}")
+    if not rows:
+        problems.append("empty ledger")
+        print("  - empty ledger: record at least the brief's requirements and anything deferred")
+    sys.exit(1 if problems else 0)
+
+
+def cmd_ledger_carry(a):
+    """Emit ledger rows for a previous record's DEFER items, as undecided carry-ins."""
+    text = read(a.record)
+    m = re.search(r"^# Tournament record: (\S+)", text, re.M)
+    prev = m.group(1) if m else "previous"
+    for r in ledger_rows(text):
+        if r["Decision"].strip("` ").upper() == "DEFER":
+            print(f"| {prev}/{r['ID']} | {r['Requirement']} | previous:{prev} | ? | "
+                  f"deferred in {prev}: {r['Why']} | {r['Ref']} |")
+
+
+def cmd_record(a):
+    rd = Path(a.rd)
+
+    def section(title, path, demote=True):
+        body = read(path).strip()
+        if not body:
+            return f"## {title}\n\n(not available)\n"
+        if demote:  # keep the record's heading hierarchy: push nested headings down one level
+            body = re.sub(r"^(#+) ", lambda mm: "##" + mm.group(1) + " ", body, flags=re.M)
+        return f"## {title}\n\n{body}\n"
+
+    mapping = read_mapping(rd)
+    stances = "\n".join(f"- `{k}`: {v}" for k, v in mapping.items()) or "(none)"
+    ledger = read(rd / "requirements.md").strip()
+    parts = [
+        f"# Tournament record: {a.run}\n",
+        "Durable record of a design tournament. The run directory (`.tournament/`) is local;",
+        "this file is what survives. A later tournament can start from it with",
+        f"`tourney init <next> --previous <this file>`, which carries every DEFER item forward.\n",
+        "| | |\n|---|---|",
+        f"| Baseline | `{a.base}` |\n| Frozen spec | `{a.spec}` |\n| Final build | `{a.final}` |\n",
+        "## Candidates (stance per letter)\n\n" + stances + "\n",
+        "## Requirements ledger\n\n" + (re.sub(r"^# .*\n", "", ledger, count=1).strip() or "(no ledger)") + "\n",
+        section("Approved design", rd / "synthesis" / "DESIGN.md"),
+        section("Metrics", rd / "metrics" / "summary.md"),
+        section("Differential test", rd / "difftest" / "summary.md"),
+        section("Change probes", rd / "probe" / "summary.md"),
+    ]
+    print("\n".join(parts))
+
+
 def cmd_extract_result(a):
     d = load_json(a.log, {}) or {}
     res = d.get("result") if isinstance(d, dict) else None
@@ -574,6 +677,13 @@ def main():
     p = sp.add_parser("difftest-summary"); p.add_argument("rd"); p.add_argument("--blind", action="store_true")
     p.add_argument("--rel", type=float, default=1e-6); p.add_argument("--abs", type=float, default=1e-9)
     p.set_defaults(f=cmd_difftest_summary)
+    p = sp.add_parser("ledger-check"); p.add_argument("file")
+    p.add_argument("--count-undecided", action="store_true"); p.set_defaults(f=cmd_ledger_check)
+    p = sp.add_parser("ledger-carry"); p.add_argument("record"); p.set_defaults(f=cmd_ledger_carry)
+    p = sp.add_parser("record")
+    for n in ("rd", "run", "base", "spec", "final"):
+        p.add_argument(n)
+    p.set_defaults(f=cmd_record)
     p = sp.add_parser("extract-result"); p.add_argument("log"); p.set_defaults(f=cmd_extract_result)
     p = sp.add_parser("status"); p.add_argument("rd"); p.add_argument("wt"); p.set_defaults(f=cmd_status)
 

@@ -21,6 +21,18 @@ idea costs a full rewrite and leaves scars in the code. The tournament runs the 
 | Fresh build | A clean implementation of a known-good design is fast, and consistent from top to bottom. | The builder copies files wholesale. It may read candidates, not paste them. |
 | Re-measure final | Keeps the process honest: the synthesis should beat the best candidate on probes. | Skipped. If the final loses, say so and consider shipping the best candidate instead. |
 
+## Why a requirements ledger
+A tournament surfaces more requirements than it can build, from the spec agent, the
+auditors, the probes and the judges. Without a decision for each one, they leak in
+two bad ways. Some get folded into the spec mid-run, so it grows and stops being a
+fixed yardstick. Others are mentioned once and forgotten, and the next version
+rediscovers them the hard way. The ledger forces an explicit KEEP / DEFER / DROP.
+DEFER requires a tracker issue, because the run directory doesn't survive the machine.
+`--previous` makes the next run re-decide every deferral rather than inherit it
+silently. Deferrals are hidden from candidates because a known future requirement
+changes the designs, and you would no longer be measuring the design that fits *this*
+spec.
+
 ## Tuning
 - **N candidates**: 5-8. Beyond 8, judges skim and the extra designs add little.
   With fewer than 4 there is not much design space to compare.
