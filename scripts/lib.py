@@ -156,6 +156,13 @@ EXTRA_METRICS=(
 )
 
 # --- agents ---------------------------------------------------------------
+# Harness: 'claude' (default) runs `claude -p`. Anything else is a shell command that reads
+# the prompt on stdin, works in the current directory, and prints its final message on
+# stdout (see SKILL.md, "Agent harness"). Overridden by $TOURNEY_AGENT and by --agent.
+# The flags below are examples only; check your CLI's current documentation:
+#   AGENT='codex exec --full-auto -'
+#   AGENT='gemini --yolo'
+AGENT="claude"
 MODEL=""            # e.g. opus, sonnet; empty = CLI default
 EFFORT=""           # low|medium|high|xhigh|max; empty = default
 BUDGET_USD="20"     # per agent run (--max-budget-usd); empty = unlimited
@@ -600,6 +607,20 @@ def cmd_record(a):
     print("\n".join(parts))
 
 
+def cmd_wrap_result(a):
+    """Wrap a non-claude agent's stdout into the JSON shape claude -p writes."""
+    text = read(a.out).strip()
+    cost = None
+    m = re.search(r"(?im)^\s*(?:total[_ ])?cost[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", text)
+    if m:  # optional: agents that print their cost on a line of their own
+        cost = float(m.group(1))
+    print(json.dumps({
+        "type": "result", "subtype": "success" if a.rc == 0 else "error_command",
+        "is_error": a.rc != 0, "num_turns": None, "total_cost_usd": cost,
+        "duration_ms": a.seconds * 1000, "result": text,
+    }))
+
+
 def cmd_extract_result(a):
     d = load_json(a.log, {}) or {}
     res = d.get("result") if isinstance(d, dict) else None
@@ -684,6 +705,9 @@ def main():
     for n in ("rd", "run", "base", "spec", "final"):
         p.add_argument(n)
     p.set_defaults(f=cmd_record)
+    p = sp.add_parser("wrap-result"); p.add_argument("out")
+    p.add_argument("--rc", type=int, default=0); p.add_argument("--seconds", type=int, default=0)
+    p.set_defaults(f=cmd_wrap_result)
     p = sp.add_parser("extract-result"); p.add_argument("log"); p.set_defaults(f=cmd_extract_result)
     p = sp.add_parser("status"); p.add_argument("rd"); p.add_argument("wt"); p.set_defaults(f=cmd_status)
 

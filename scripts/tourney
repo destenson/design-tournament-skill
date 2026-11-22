@@ -17,7 +17,12 @@ TROOT="$REPO/.tournament"
 
 usage() {
   cat <<'EOF'
-usage: tourney <command> <run> [args]
+usage: tourney [--agent AGENT] <command> <run> [args]
+
+  --agent AGENT   the coding-agent harness for agent phases. 'claude' (default) uses
+                  `claude -p`; anything else is run as a shell command (see "Agent harness"
+                  in SKILL.md). Precedence: --agent, then $TOURNEY_AGENT, then AGENT in
+                  the run's config.sh, then 'claude'.
 
   init <run> [--mode M] [--previous F]    create .tournament/<run>/ from templates; F = a previous
                                           run's record: its DEFER items are carried into the ledger
@@ -59,12 +64,13 @@ load_run() {
   EXTRA_METRICS=(); MODEL=""; EFFORT=""; BUDGET_USD=""; PARALLEL=4; MEASURE_PARALLEL=1
   PERMISSION_MODE="acceptEdits"; ALLOWED_TOOLS="Read Edit Write Glob Grep Bash"
   JUDGE_TOOLS="Read Glob Grep Bash(ls *) Bash(wc *) Bash(git diff *)"
-  WORKTREE_ROOT=""
+  WORKTREE_ROOT=""; AGENT=""; READ_ONLY=0
   DIFFTEST_HARNESS=""; DIFFTEST_INSTALL=""; DIFFTEST_CMD=""; DIFFTEST_REFERENCE_ENV=""
   DIFFTEST_REL_TOL="1e-6"; DIFFTEST_ABS_TOL="1e-9"
   RECORD_PATH="docs/tournaments/{run}.md"
   # shellcheck disable=SC1091
   source "$RD/config.sh"
+  AGENT="${TOURNEY_AGENT_CLI:-${TOURNEY_AGENT:-${AGENT:-claude}}}"
   WT="${WORKTREE_ROOT:-$(dirname "$REPO")/$(basename "$REPO").tourney/$RUN}"
   BR="tourney/$RUN"
   mkdir -p "$RD"/{logs,state,metrics,probe,reports,synthesis}
@@ -101,10 +107,17 @@ commit_wt() {
     commit -q --allow-empty --no-verify -m "$msg"
 }
 
-# run_agent <logname> <cwd> <prompt-file> [extra claude args...]
+# run_agent <logname> <cwd> <prompt-file> [--add-dir DIR ...]
+# AGENT=claude uses `claude -p`. Any other AGENT is a shell command run in <cwd> with the
+# prompt on stdin; its stdout is taken as the agent's final message. It also gets
+# TOURNEY_ROLE, TOURNEY_PROMPT_FILE, TOURNEY_READ_ONLY (1 = must not edit files),
+# TOURNEY_EXTRA_DIRS (extra read-only dirs, colon-separated), TOURNEY_MODEL, TOURNEY_EFFORT,
+# TOURNEY_BUDGET_USD. Every log is written as the same JSON shape, so later phases are
+# agent-agnostic.
 run_agent() {
+  if [ "$AGENT" != claude ]; then run_agent_command "$@"; return 0; fi
   local name=$1 cwd=$2 pf=$3; shift 3
-  command -v claude >/dev/null || die "'claude' CLI not found; use the in-session fallback (SKILL.md)"
+  command -v claude >/dev/null || die "'claude' CLI not found: install it, choose another agent with --agent / TOURNEY_AGENT, or use the in-session fallback (SKILL.md)"
   local args=(-p --output-format json --permission-mode "$PERMISSION_MODE")
   [ -n "$MODEL" ] && args+=(--model "$MODEL")
   [ -n "$EFFORT" ] && args+=(--effort "$EFFORT")
@@ -116,6 +129,21 @@ run_agent() {
       < "$pf" > "$RD/logs/$name.json" 2> "$RD/logs/$name.err") || rc=$?
   log "agent $name: done rc=$rc in $((SECONDS - t0))s $(py agent-stats "$RD/logs/$name.json" --oneline)"
   return 0
+}
+
+run_agent_command() {
+  local name=$1 cwd=$2 pf=$3; shift 3
+  local extra="" t0=$SECONDS rc=0
+  while [ $# -gt 0 ]; do
+    case "$1" in --add-dir) extra="${extra:+$extra:}$2"; shift 2;; *) shift;; esac
+  done
+  log "agent $name: start via '$AGENT' (cwd $cwd)"
+  (cd "$cwd" && TOURNEY_ROLE="${name%%-*}" TOURNEY_PROMPT_FILE="$pf" TOURNEY_READ_ONLY="$READ_ONLY" \
+      TOURNEY_EXTRA_DIRS="$extra" TOURNEY_MODEL="$MODEL" TOURNEY_EFFORT="$EFFORT" \
+      TOURNEY_BUDGET_USD="$BUDGET_USD" bash -c "$AGENT" \
+      < "$pf" > "$RD/logs/$name.out" 2> "$RD/logs/$name.err") || rc=$?
+  py wrap-result "$RD/logs/$name.out" --rc "$rc" --seconds $((SECONDS - t0)) > "$RD/logs/$name.json"
+  log "agent $name: done rc=$rc in $((SECONDS - t0))s $(py agent-stats "$RD/logs/$name.json" --oneline)"
 }
 
 # throttle: block until fewer than $1 background jobs are running
@@ -410,7 +438,7 @@ cmd_judge() {
     name=$(basename "$j" .md)
     TV_LENS="$(cat "$j")" py render "$RD/prompts/judge.md" > "$RD/state/prompt-judge-$name.md"
     throttle "$PARALLEL"
-    ( ALLOWED_TOOLS="$JUDGE_TOOLS" PERMISSION_MODE=default \
+    ( ALLOWED_TOOLS="$JUDGE_TOOLS" PERMISSION_MODE=default READ_ONLY=1 \
         run_agent "judge-$name" "$RD/blind" "$RD/state/prompt-judge-$name.md"
       py extract-result "$RD/logs/judge-$name.json" > "$RD/reports/judge-$name.md" ) &
   done
@@ -427,7 +455,7 @@ cmd_synthesize() {
   export TV_BASE="${base:-chosen by the synthesizer}"
   export TV_LETTERS; TV_LETTERS="$(letters | tr '\n' ' ')"
   render "$RD/prompts/synthesize.md" "$RD/state/prompt-synthesize.md"
-  ALLOWED_TOOLS="$JUDGE_TOOLS" PERMISSION_MODE=default \
+  ALLOWED_TOOLS="$JUDGE_TOOLS" PERMISSION_MODE=default READ_ONLY=1 \
     run_agent synthesize "$RD/blind" "$RD/state/prompt-synthesize.md"
   py extract-result "$RD/logs/synthesize.json" > "$RD/synthesis/DESIGN.md"
   echo "Wrote $RD/synthesis/DESIGN.md. Review/edit it before: tourney build $RUN"
@@ -478,12 +506,16 @@ cmd_stop() {
   for pid in $(pgrep -f "scripts/tourney (all|diverge|probe|judge|audit|fold|spec|synthesize|build|measure|difftest) $RUN( |$)" || true); do
     [ "$pid" = "$$" ] && continue; kill "$pid" 2>/dev/null && n=$((n + 1))
   done
-  for pid in $(pgrep -f "claude -p" || true); do
+  # agents of any harness: every process whose working directory is inside this run
+  local self_pids=" $$ $PPID $BASHPID "
+  for pid in $(ls /proc | grep -E '^[0-9]+$'); do
+    [[ "$self_pids" == *" $pid "* ]] && continue
     cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
     case "$cwd" in "$WT"/*|"$RD"|"$RD"/*) kill -INT "$pid" 2>/dev/null && n=$((n + 1));; esac
   done
   sleep 3
-  for pid in $(pgrep -f "claude -p" || true); do
+  for pid in $(ls /proc | grep -E '^[0-9]+$'); do
+    [[ "$self_pids" == *" $pid "* ]] && continue
     cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
     case "$cwd" in "$WT"/*|"$RD"|"$RD"/*) kill "$pid" 2>/dev/null || true;; esac
   done
@@ -562,6 +594,9 @@ cmd_clean() {
 }
 
 main() {
+  while [ "${1:-}" = --agent ]; do
+    [ -n "${2:-}" ] || die "--agent needs a value"; export TOURNEY_AGENT_CLI="$2"; shift 2
+  done
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     init) cmd_init "$@";; spec) cmd_spec "$@";; freeze) cmd_freeze "$@";;

@@ -10,8 +10,8 @@ better *design*, not a merge of code. Merging code from N candidates produces a
 Frankenstein with mismatched abstractions. Instead, ideas are extracted into
 `DESIGN.md` and one fresh agent implements it cleanly.
 
-Everything is driven by `scripts/tourney` (bash + python3, git worktrees, headless
-`claude -p`). State lives in `.tournament/<run>/` at the repo root. Init adds that
+Everything is driven by `scripts/tourney` (bash + python3, git worktrees, and a headless
+coding-agent CLI: `claude -p` by default, any other via `--agent`; see "Agent harness"). State lives in `.tournament/<run>/` at the repo root. Init adds that
 path to `.git/info/exclude`, so the tracked tree is never touched. The skill itself
 is project-agnostic: everything project-specific (brief, stances, probes, the
 difftest harness) lives in the run directory.
@@ -137,8 +137,8 @@ DROP it.
 Agent phases are the expensive part. If spend or time runs short, stop early and salvage
 rather than throwing the work away:
 
-1. `tourney stop <run>`: stops this run's orchestrator and agents. Interrupted agents
-   still leave their cost in `logs/`.
+1. `tourney stop <run>`: stops this run's orchestrator, and every process (of any harness)
+   working inside its worktrees. An interrupted `claude` agent still leaves its cost in `logs/`.
 2. `tourney salvage <run>`: commits each candidate's partial work as WIP, then runs
    `measure` and `difftest` on every candidate that changed anything in scope. That
    costs no agent spend. Interrupted candidates are often closer to done than they
@@ -153,9 +153,34 @@ to the branch `tourney/<run>/state` (skipping `blind/`, which is rebuilt on dema
 state at every human checkpoint, and before ending a long session: a fresh session is
 cheaper per step, and less likely to forget the process, than a very long one.
 
-## No headless `claude`? (in-session fallback)
+## Agent harness
 
-If `claude -p` is unavailable, run the agent phases with the Agent tool instead: one
+The agent phases (spec, audit, fold, diverge, probe, judge, synthesize, build) shell out
+to a coding-agent CLI. Choose it with `tourney --agent X <command> …`, with
+`TOURNEY_AGENT=X`, or with `AGENT=` in the run's `config.sh`, in that order of precedence.
+The default is `claude`.
+
+- `claude`: built in. Runs `claude -p` and uses `MODEL`, `EFFORT`, `BUDGET_USD`,
+  `PERMISSION_MODE`, `ALLOWED_TOOLS` and `JUDGE_TOOLS` (judges get read-only tools).
+- Anything else is a **shell command**, run in the agent's working directory. Its contract:
+  - read the prompt on **stdin**; edit files in the current directory; print the final
+    message (report, plan, summary) on **stdout**; exit non-zero on failure;
+  - it also receives `TOURNEY_ROLE` (`spec`, `audit`, `implement`, `probe`, `judge`,
+    `synthesize`, `build`, …), `TOURNEY_PROMPT_FILE`, `TOURNEY_READ_ONLY` (`1` for judges
+    and the synthesizer: map it to the CLI's read-only or sandbox mode), `TOURNEY_EXTRA_DIRS`
+    (colon-separated directories it must be able to read), `TOURNEY_MODEL`,
+    `TOURNEY_EFFORT` and `TOURNEY_BUDGET_USD`;
+  - optionally print a line like `cost: $1.23` so spend shows up in `status`.
+
+  Wrap a CLI in a small script when its flags don't fit this contract directly, e.g. to
+  map `TOURNEY_READ_ONLY` onto a sandbox flag. The command's permissions are its own: the
+  script cannot enforce read-only judges or tool limits for it.
+- Mixed harnesses work: `tourney --agent X diverge` for candidates and the default for
+  judges, for example, since every log is normalized to the same JSON shape.
+
+## No agent CLI at all? (in-session fallback)
+
+If no headless agent CLI is available, run the agent phases with the Agent tool instead: one
 `Agent` call per candidate (or auditor or prober) with `isolation: "worktree"` and the
 prompt from `tourney render <run> <template> [file]`. Commit each worktree to the
 branch name the script would use, then continue with the script phases as normal.
