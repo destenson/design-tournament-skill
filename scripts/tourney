@@ -37,6 +37,11 @@ usage: tourney <command> <run> [args]
   record <run>                            write the durable tournament record into the final branch
   all <run>                               diverge, measure, probe, judge, synthesize
   status <run>                            progress and spend
+  stop <run>                              stop this run's orchestrator and agents (keeps their work)
+  salvage <run>                           after a stop: commit partial candidates as WIP, then measure
+                                          and difftest them (no agent spend)
+  save-state <run> [--push]               commit the local run dir to branch tourney/<run>/state
+  restore-state <run>                     recreate .tournament/<run>/ from that branch (new machine/session)
   render <run> <template> [file]          print a rendered prompt (for in-session Agent fallback)
   clean <run> [--branches]                remove worktrees (and optionally branches)
 EOF
@@ -138,7 +143,7 @@ cmd_init() {
   fi
   py detect-config "$REPO" "$mode" > "$RD/config.sh"
   git -C "$REPO" rev-parse HEAD > "$RD/base_ref"
-  local excl; excl="$(git -C "$REPO" rev-parse --git-common-dir)/info/exclude"
+  local excl; excl="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
   mkdir -p "$(dirname "$excl")"
   grep -qxF '.tournament/' "$excl" 2>/dev/null || echo '.tournament/' >> "$excl"
   cat <<EOF
@@ -415,8 +420,11 @@ cmd_judge() {
 
 cmd_synthesize() {
   load_run "$1"
-  [ -d "$RD/blind" ] || die "run judge first"
-  cp "$RD"/reports/judge-*.md "$RD/blind/_evidence/" 2>/dev/null || die "no judge reports"
+  [ -d "$RD/blind" ] || build_blind
+  cp "$RD"/reports/judge-*.md "$RD/blind/_evidence/" 2>/dev/null \
+    || log "no judge reports: synthesizing from metrics, difftest, probes and notes only"
+  local base=""; [ "${2:-}" = --base ] && base="${3:-}"
+  export TV_BASE="${base:-chosen by the synthesizer}"
   export TV_LETTERS; TV_LETTERS="$(letters | tr '\n' ' ')"
   render "$RD/prompts/synthesize.md" "$RD/state/prompt-synthesize.md"
   ALLOWED_TOOLS="$JUDGE_TOOLS" PERMISSION_MODE=default \
@@ -464,6 +472,75 @@ cmd_all() {
   echo "'Requirements surfaced' section; record each item in requirements.md"
 }
 
+cmd_stop() {
+  load_run "$1"
+  local pid cwd n=0
+  for pid in $(pgrep -f "scripts/tourney (all|diverge|probe|judge|audit|fold|spec|synthesize|build|measure|difftest) $RUN( |$)" || true); do
+    [ "$pid" = "$$" ] && continue; kill "$pid" 2>/dev/null && n=$((n + 1))
+  done
+  for pid in $(pgrep -f "claude -p" || true); do
+    cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
+    case "$cwd" in "$WT"/*|"$RD"|"$RD"/*) kill -INT "$pid" 2>/dev/null && n=$((n + 1));; esac
+  done
+  sleep 3
+  for pid in $(pgrep -f "claude -p" || true); do
+    cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
+    case "$cwd" in "$WT"/*|"$RD"|"$RD"/*) kill "$pid" 2>/dev/null || true;; esac
+  done
+  log "stopped $n process(es). Next: tourney salvage $RUN"
+}
+
+cmd_salvage() {
+  load_run "$1"
+  local L dir done_letters=""
+  for L in $(letters); do
+    dir="$WT/$L"; [ -d "$dir" ] || continue
+    if [ -n "$(git -C "$dir" status --porcelain)" ]; then
+      commit_wt "$dir" "candidate $L (WIP: interrupted)"; log "salvaged $L (uncommitted work committed as WIP)"
+    fi
+    git -C "$dir" diff --quiet "$(spec_ref)" HEAD -- $SCOPE_PATHS && { log "skip $L: no changes in scope"; continue; }
+    done_letters="$done_letters $L"
+  done
+  [ -n "$done_letters" ] || die "nothing to salvage"
+  ( cmd_measure "$RUN" $done_letters )
+  if [ -n "$DIFFTEST_CMD" ]; then
+    local refs="spec"; [ -n "$DIFFTEST_REFERENCE_ENV" ] && refs="reference spec"
+    ( cmd_difftest "$RUN" $refs $done_letters )
+  fi
+  echo "Salvaged:$done_letters. Next: choose a base, then 'tourney synthesize $RUN --base X'"
+  echo "(works without judge reports), review DESIGN.md, then 'tourney build $RUN --base X'."
+}
+
+# Run state lives in .tournament/<run>/ (untracked, local). Save it as an orphan-history
+# branch so a new session or machine can continue. blind/ is rebuilt on demand, so it is skipped.
+cmd_save_state() {
+  load_run "$1"; local push="${2:-}" idx tree parent commit br="refs/heads/$BR/state"
+  idx=$(mktemp); rm -f "$idx"
+  local gd; gd=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)
+  GIT_INDEX_FILE="$idx" git --git-dir="$gd" --work-tree="$RD" add -A -- . ':!blind'
+  tree=$(GIT_INDEX_FILE="$idx" git --git-dir="$gd" write-tree); rm -f "$idx"
+  parent=$(git -C "$REPO" rev-parse -q --verify "$br" || true)
+  commit=$(git -C "$REPO" -c user.name=tourney -c user.email=tourney@localhost commit-tree "$tree" \
+    ${parent:+-p "$parent"} -m "tournament state: $RUN ($(date -u +%FT%TZ))")
+  git -C "$REPO" update-ref "$br" "$commit"
+  log "saved run state to $BR/state ($(git -C "$REPO" ls-tree -r --name-only "$commit" | wc -l) files)"
+  [ "$push" = --push ] && git -C "$REPO" -c push.negotiate=true push -q origin "$BR/state" && log "pushed $BR/state"
+  return 0
+}
+
+cmd_restore_state() {
+  RUN="${1:-}"; [ -n "$RUN" ] || die "missing <run>"
+  local br="tourney/$RUN/state"
+  git -C "$REPO" rev-parse -q --verify "$br" >/dev/null \
+    || git -C "$REPO" fetch -q origin "$br:$br" || die "no branch $br locally or on origin"
+  [ -e "$TROOT/$RUN" ] && die "$TROOT/$RUN exists; move it away first"
+  mkdir -p "$TROOT/$RUN" && git -C "$REPO" archive "$br" | tar -x -C "$TROOT/$RUN"
+  local excl; excl="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+  grep -qxF '.tournament/' "$excl" 2>/dev/null || echo '.tournament/' >> "$excl"
+  log "restored $TROOT/$RUN. Worktrees are recreated on demand from the tourney/$RUN/* branches"
+  log "(fetch them first: git fetch origin 'refs/heads/tourney/$RUN/*:refs/heads/tourney/$RUN/*')"
+}
+
 cmd_status() { load_run "$1"; py status "$RD" "$WT"; }
 
 cmd_render() {
@@ -489,6 +566,8 @@ main() {
   case "$cmd" in
     init) cmd_init "$@";; spec) cmd_spec "$@";; freeze) cmd_freeze "$@";;
     ledger) cmd_ledger "$@";; record) cmd_record "$@";;
+    stop) cmd_stop "$@";; salvage) cmd_salvage "$@";;
+    save-state) cmd_save_state "$@";; restore-state) cmd_restore_state "$@";;
     audit) cmd_audit "$@";; fold) cmd_fold "$@";; difftest) cmd_difftest "$@";;
     diverge) cmd_diverge "$@";; measure) cmd_measure "$@";; probe) cmd_probe "$@";;
     judge) cmd_judge "$@";; synthesize) cmd_synthesize "$@";; build) cmd_build "$@";;

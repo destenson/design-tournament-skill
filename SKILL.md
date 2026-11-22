@@ -132,6 +132,27 @@ DROP it.
   remote, push the spec and final branches and ask before pushing dozens of
   candidate and probe branches.
 
+## Aborting, salvaging, and continuing elsewhere
+
+Agent phases are the expensive part. If spend or time runs short, stop early and salvage
+rather than throwing the work away:
+
+1. `tourney stop <run>`: stops this run's orchestrator and agents. Interrupted agents
+   still leave their cost in `logs/`.
+2. `tourney salvage <run>`: commits each candidate's partial work as WIP, then runs
+   `measure` and `difftest` on every candidate that changed anything in scope. That
+   costs no agent spend. Interrupted candidates are often closer to done than they
+   look, so check the frozen-test results.
+3. Choose a base with the user from the evidence. Then `tourney synthesize <run> --base X`
+   (works without judge reports) → the user approves DESIGN.md → `tourney build <run> --base X`.
+   Do **not** shortcut to "pick one candidate as is": best of all, worst of none still applies.
+
+`.tournament/<run>/` is local to the machine. `tourney save-state <run> --push` commits it
+to the branch `tourney/<run>/state` (skipping `blind/`, which is rebuilt on demand).
+`tourney restore-state <run>` recreates it in a new session or on a new machine. Save
+state at every human checkpoint, and before ending a long session: a fresh session is
+cheaper per step, and less likely to forget the process, than a very long one.
+
 ## No headless `claude`? (in-session fallback)
 
 If `claude -p` is unavailable, run the agent phases with the Agent tool instead: one
