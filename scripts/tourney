@@ -32,7 +32,8 @@ usage: tourney <command> <run> [args]
   probe <run> [TARGET...]                 hidden follow-up features on each target, in parallel
   judge <run>                             blind export + judge agents, in parallel
   synthesize <run>                        judge reports -> synthesis/DESIGN.md
-  build <run>                             fresh agent implements DESIGN.md (branch .../final)
+  build <run> [--base LETTER]             implement DESIGN.md (branch .../final); --base starts from that
+                                          candidate's code and applies the grafts (default: fresh rewrite)
   record <run>                            write the durable tournament record into the final branch
   all <run>                               diverge, measure, probe, judge, synthesize
   status <run>                            progress and spend
@@ -427,7 +428,14 @@ cmd_synthesize() {
 cmd_build() {
   load_run "$1"
   [ -s "$RD/synthesis/DESIGN.md" ] || die "no synthesis/DESIGN.md"
-  local dir; dir=$(worktree final "$BR/final" "$(spec_ref)")
+  local base="" start; [ "${2:-}" = --base ] && base="${3:-}"
+  start="$(spec_ref)"
+  if [ -n "$base" ]; then
+    start=$(git -C "$REPO" rev-parse --verify -q "$BR/$base") || die "no candidate branch $BR/$base"
+    log "build starts from candidate $base's code (graft mode)"
+  fi
+  export TV_BASE="${base:-none (fresh rewrite)}"
+  local dir; dir=$(worktree final "$BR/final" "$start")
   cp "$RD/synthesis/DESIGN.md" "$dir/TOURNAMENT_DESIGN.md"
   export TV_BLIND_DIR="$RD/blind"
   render "$RD/prompts/build.md" "$RD/state/prompt-build.md"

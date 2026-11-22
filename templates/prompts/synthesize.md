@@ -12,7 +12,13 @@ the **blueprint** that one fresh engineer will implement from scratch. It is not
   disagree or make a claim you need to check.
 
 # Principles
-- **Pick one skeleton and graft onto it.** Do not union features or average designs.
+- **Pick one skeleton and graft onto it.** Do not union features or average designs. The
+  build normally *starts from the skeleton's code* (`build --base`), so be concrete: list
+  each graft with `source:line → target:line`, and also list fixes to the skeleton that no
+  candidate does better, plus code to remove from it.
+- **Best of all, worst of none, no bloat.** A graft must be better in a way that matters
+  (correctness, robustness, clarity, less code) and stay in scope. Prefer grafts that
+  delete code. Reject "nice to have".
 - **Every abstraction must earn its place** with a spec requirement or probe evidence
   (a seam that made a hidden follow-up feature cheap). Delete speculative generality.
 - **Prefer what won on the probes** over what merely looks elegant.

@@ -34,7 +34,7 @@ difftest harness) lives in the run directory.
 | 4 | `tourney probe <run>` | N×P agents ∥ | `probe/summary.md`, diffs, maintainer notes | — |
 | 5 | `tourney judge <run>` | 3 agents ∥, blinded | `reports/judge-*.md` | read the reports |
 | 6 | `tourney synthesize <run>` | 1 agent | `synthesis/DESIGN.md` incl. "Requirements surfaced" | **approve design; decide surfaced requirements** |
-| 7 | `tourney build <run>` | 1 agent | branch `tourney/<run>/final` | review; `measure`/`difftest`/`probe` it as `final` |
+| 7 | `tourney build <run> [--base X]` | 1 agent | branch `tourney/<run>/final`: candidate X's code plus the grafts (or a fresh rewrite) | review; `measure`/`difftest`/`probe` it as `final` |
 | 8 | `tourney record <run>` | script | `docs/tournaments/<run>.md` on the final branch | — |
 
 `tourney all <run>` runs phases 2-6 (including difftest when configured) after the
@@ -119,8 +119,11 @@ DROP it.
   with no stance names.
 - **The spec and tests are the yardstick.** If the spec turns out to be wrong
   mid-tournament, stop, fix it, re-freeze, and re-run `diverge`.
-- **Don't merge candidate code.** The synthesizer writes prose and interfaces. The
-  builder may *read* candidates but rewrites everything.
+- **Best of all, worst of none.** The final build is rarely a single candidate as is. The
+  usual path is to start from the best candidate (`build --base X`) and graft in the
+  specific improvements from the others, fixing the base's weaknesses along the way. Use
+  a fresh rewrite only when no candidate is a sound skeleton. Never merge whole files or
+  keep two ways of doing the same thing. Every graft must earn its lines.
 - **Nothing silently dropped.** A requirement that is not in the spec is in the ledger
   as DEFER (with a tracker issue) or DROP (with a reason).
 - **Report faithfully.** Failed candidates, tampered tests, difftest disagreements,
